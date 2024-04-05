@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import torch
 import rospy
 import cv2
@@ -7,68 +8,52 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import os
 import rospkg
-from ultralytics.vit import RTDETR
+from ultralytics import RTDETR
 import time
 
-# path = rospkg.RosPack().get_path("your_package")
-
-# os.chdir(path)
-
 class ObjectDetection(object):
-
     def __init__(self):
         self.bridge = CvBridge()
         rospy.init_node("object_detect", anonymous=True)
         rospy.Subscriber("/usb_cam/image_raw", Image, self.update_frame_callback)
         rospy.wait_for_message("/usb_cam/image_raw", Image)
+        self.model = RTDETR("/home/maxmurr/girl/runs/train/train15/weights/best.pt")
+        self.CLASS_NAMES = self.model.model.names
 
     def update_frame_callback(self, data):
         self.image = self.bridge.imgmsg_to_cv2(data, desired_encoding="bgr8")
 
     def main(self):
-		self.model = RTDETR("/home/maxmurr/girl/runs/train/train15/weights/best.pt")
-		self.CLASS_NAMES = self.model.model.names
-        # net = cv2.dnn.readNet("cfg/yolov3.weights", "cfg/yolov3.cfg")
-        # classes = []
-        # with open("olv7jukcfg/coco.names", "r") as f:
-        #     classes = [line.strip() for line in f.readlines()]
-
-        output_layers = [layer_name for layer_name in net.getUnconnectedOutLayersNames()]
-        colors = np.random.uniform(0, 255, size=(len(classes), 3))
-
         while not rospy.is_shutdown():
             frame = self.image
             height, width, channels = frame.shape
-            blob = cv2.dnn.blobFromImage(frame, scalefactor=0.00392, size=(320, 320), mean=(0, 0, 0), swapRB=True, crop=False)
-            net.setInput(blob)
-            outputs = net.forward(output_layers)
-            boxes = []
-            confs = []
-            class_ids = []
-            for output in outputs:
-                for detect in output:
-                    scores = detect[5:]
-                    class_id = np.argmax(scores)
-                    conf = scores[class_id]
-                    if conf > 0.3:
-                        center_x = int(detect[0] * width)
-                        center_y = int(detect[1] * height)
-                        w = int(detect[2] * width)
-                        h = int(detect[3] * height)
-                        x = int(center_x - w/2)
-                        y = int(center_y - h / 2)
-                        boxes.append([x, y, w, h])
-                        confs.append(float(conf))
-                        class_ids.append(class_id)
-            indexes = cv2.dnn.NMSBoxes(boxes, confs, 0.5, 0.4)
-            font = cv2.FONT_HERSHEY_PLAIN
-            for i in range(len(boxes)):
-                if i in indexes:
-                    x, y, w, h = boxes[i]
-                    label = str(classes[class_ids[i]])
-                    color = colors[i]
-                    cv2.rectangle(frame, (x,y), (x+w, y+h), color, 2)
-                    cv2.putText(frame, label, (x, y - 5), font, 1, color, 1)
+
+            # Perform object detection using RTDETR model
+            results = self.model(frame)
+
+            # Process the detection results
+            boxes = results[0].boxes.xyxy.cpu().numpy()
+            scores = results[0].boxes.conf.cpu().numpy()
+            class_ids = results[0].boxes.cls.cpu().numpy().astype(int)
+
+            # Filter out low confidence detections
+            mask = scores > 0.3
+            boxes = boxes[mask]
+            scores = scores[mask]
+            class_ids = class_ids[mask]
+
+            # Apply non-maximum suppression
+            indexes = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.5, 0.4)
+
+            # Draw bounding boxes and labels on the frame
+            colors = np.random.uniform(0, 255, size=(len(self.CLASS_NAMES), 3))
+            for i in indexes:
+                x1, y1, x2, y2 = boxes[i].astype(int)
+                label = self.CLASS_NAMES[class_ids[i]]
+                color = colors[class_ids[i]]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_PLAIN, 1, color, 1)
+
             cv2.imshow("Image", frame)
             key = cv2.waitKey(1)
             if key == 27:
